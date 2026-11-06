@@ -1,0 +1,471 @@
+diff -ruN a/include/battle/port_chara.h b/include/battle/port_chara.h
+--- a/include/battle/port_chara.h	1970-01-01 00:00:00.000000000 +0000
++++ b/include/battle/port_chara.h	2026-11-06 22:39:28.876091483 +0000
+@@ -0,0 +1,142 @@
++#ifndef BATTLE_PORT_CHARA_H
++#define BATTLE_PORT_CHARA_H
++
++/*
++ * Port only: hidden character slots, reachable only as a transformation of a disc character.
++ *
++ * The disc has 161 characters (ids 0..160) and every per-character file id is a formula of the id
++ * (model 0x590 + id * 10 + costume, +4 damaged; animation 0x598 + id * 10; effects 0x599 + id * 10;
++ * data block 8 + id * 2 + side; voice bank 0xBDA + id, or 0xC7B + id with the voice flag). Id 161 on would
++ * land on other files (0x590 + 161 * 10 = 0xBDA is the first voice bank), so an added slot gets file ids of
++ * its own, far past the end of the second archive (like PORT_ADDED_STAGE_FILE in battle_load.c), served
++ * from gamedata/mods/pzs3us2/<n>.bin.
++ *
++ * An added slot is only a set of FILES (model, animations, effects, voice bank). Everything else the game
++ * keys by character (stats, tables, voice lines, the data block) is the BASE character's: the member and the
++ * fighter object keep the base id (PortChara_Base), and only the side's "current form" (BattleSide_GetChara)
++ * holds the added id, so a restart reloads the disc character.
++ *
++ * Files of slot k (k = id - PORT_CHARA_FIRST), file number n of its block of PORT_CHARA_STRIDE:
++ *   0..3  model, costume 0..3 (1p..4p)       4..7  damaged model, costume 0..3 (1p dmg..4p dmg)
++ *   8     animations (anm)                   9     effects (eff)
++ *   12    voice bank (voice flag off)        13    voice bank (voice flag on)
++ * Their host names: pzs3us2/<PORT_CHARA_FILE_INDEX + k * PORT_CHARA_STRIDE + n, 5 digits>.bin
++ *
++ * Plain int / const char * only: the port's C++ (fight panels) includes this too.
++ */
++
++#define PORT_CHARA_FIRST 161
++#define PORT_CHARA_COUNT 1
++#define PORT_CHARA_STRIDE 16
++#define PORT_CHARA_FILE_INDEX 80000 /* in the second archive (65,201 files; the added stages use 70000..) */
++#define PORT_CHARA_FILE_BASE (0xD48 + PORT_CHARA_FILE_INDEX)
++
++typedef struct PortCharaSlot {
++    int id;          /* the hidden id */
++    int base;        /* the disc character whose stats, tables and data block it uses (and is reached from) */
++    int index;       /* which of the base character's four transformation slots reaches it (0..3; must be free) */
++    int cost;        /* blast stocks */
++    int seq;         /* 0 = action 0xEC (the plain transformation); see BtlAct_QueueTransform */
++    int kind;        /* 0 = no condition (3 = needs the moon) */
++    int a8;
++    const char *name;
++} PortCharaSlot;
++
++static const PortCharaSlot kPortCharaSlots[PORT_CHARA_COUNT] = {
++    /* id   base  index cost seq kind a8  name */
++    { 161,  73,   1,    2,   0,  0,   0,  "Bardock SSJ" }, /* base 73 = Bardock (74 = Bardock Great Ape) */
++};
++
++static inline int PortChara_IsExtra(int chara) {
++    return chara >= PORT_CHARA_FIRST && chara < PORT_CHARA_FIRST + PORT_CHARA_COUNT;
++}
++
++static inline const PortCharaSlot *PortChara_Slot(int chara) {
++    return PortChara_IsExtra(chara) ? &kPortCharaSlots[chara - PORT_CHARA_FIRST] : (const PortCharaSlot *)0;
++}
++
++/* The disc character a (possibly added) id stands for. */
++static inline int PortChara_Base(int chara) {
++    return PortChara_IsExtra(chara) ? kPortCharaSlots[chara - PORT_CHARA_FIRST].base : chara;
++}
++
++/* The display name of an added id, NULL for any other. */
++static inline const char *PortChara_Name(int chara) {
++    return PortChara_IsExtra(chara) ? kPortCharaSlots[chara - PORT_CHARA_FIRST].name : (const char *)0;
++}
++
++/* File id of file n of an added slot's block. */
++static inline int PortChara_FileId(int chara, int n) {
++    return PORT_CHARA_FILE_BASE + (chara - PORT_CHARA_FIRST) * PORT_CHARA_STRIDE + n;
++}
++
++/* The game's file ids, with an added id answered from its own block. */
++static inline int PortChara_ModelFile(int chara, int costume, int damaged) {
++    if (PortChara_IsExtra(chara)) {
++        return PortChara_FileId(chara, (damaged ? 4 : 0) + (costume & 3));
++    }
++    return chara * 10 + costume + 0x590 + (damaged ? 4 : 0);
++}
++
++static inline int PortChara_AnimFile(int chara) {
++    return PortChara_IsExtra(chara) ? PortChara_FileId(chara, 8) : chara * 10 + 0x598;
++}
++
++static inline int PortChara_EffFile(int chara) {
++    return PortChara_IsExtra(chara) ? PortChara_FileId(chara, 9) : chara * 10 + 0x599;
++}
++
++/* The data block (stats, moves, transformation table) is the base character's. */
++static inline int PortChara_DataFile(int chara, int side) {
++    return PortChara_Base(chara) * 2 + side + 8;
++}
++
++static inline int PortChara_VoiceFile(int chara, int altVoice) {
++    if (PortChara_IsExtra(chara)) {
++        return PortChara_FileId(chara, altVoice ? 13 : 12);
++    }
++    return chara + (altVoice ? 0xC7B : 0xBDA);
++}
++
++/* The character id of a loaded model file id (the inverse of the formulas above; the base for an added one). */
++static inline int PortChara_FromModelFile(int fileId) {
++    if (fileId >= PORT_CHARA_FILE_BASE && fileId < PORT_CHARA_FILE_BASE + PORT_CHARA_COUNT * PORT_CHARA_STRIDE) {
++        return kPortCharaSlots[(fileId - PORT_CHARA_FILE_BASE) / PORT_CHARA_STRIDE].base;
++    }
++    return (fileId - 0x590) / 10;
++}
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++extern int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size); /* port/src/plat_file.c */
++#ifdef __cplusplus
++}
++#endif
++
++/*
++ * 1 when every file of an added slot is installed. The loader waits for a missing file forever, so a slot whose
++ * mod is not installed is never offered: the base character keeps only his disc transformations.
++ */
++static inline int PortChara_Installed(int chara) {
++    static signed char sKnown[PORT_CHARA_COUNT]; /* 0 = not checked, 1 = installed, -1 = not */
++    static const int kNeeded[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13 };
++    int k = chara - PORT_CHARA_FIRST, i;
++    char path[512];
++
++    if (!PortChara_IsExtra(chara)) {
++        return 0;
++    }
++    if (sKnown[k] == 0) {
++        sKnown[k] = 1;
++        for (i = 0; i < (int)(sizeof(kNeeded) / sizeof(kNeeded[0])); i++) {
++            if (!Port_FilePath(2, PORT_CHARA_FILE_INDEX + k * PORT_CHARA_STRIDE + kNeeded[i], (const char *)0, path, (int)sizeof(path))) {
++                sKnown[k] = -1;
++                break;
++            }
++        }
++    }
++    return sKnown[k] > 0;
++}
++
++#endif
+diff -ruN a/port/src/fight_panels.c b/port/src/fight_panels.c
+--- a/port/src/fight_panels.c	2026-11-06 22:39:28.897977226 +0000
++++ b/port/src/fight_panels.c	2026-11-06 22:39:28.898890139 +0000
+@@ -16,6 +16,7 @@
+ #include <string.h>
+ 
+ #include "gs/fight_panels.h"
++#include "battle/port_chara.h"
+ 
+ #if (defined(__x86_64__) || defined(__aarch64__)) && defined(__clang__)
+ #undef __ptr32 /* the Windows headers of mingw define these two away */
+@@ -39,6 +40,7 @@
+ 
+ extern void GAME_PTR BtlChar_FindBySide(int side);
+ extern int BtlCharApi_GetChara(int objId);
++extern int BattleSide_GetChara(int side); /* the form on screen: an added form's hidden id while it lasts */
+ extern int BtlChar_TestFlag(void GAME_PTR chr, unsigned n);
+ #define CHR_POWERED_UP 6
+ 
+@@ -111,6 +113,10 @@
+         m = chr + CHR_MEMBERS + i * MEMBER_SIZE;
+         o->present = rd(m, MEMBER_PRESENT) != 0;
+         o->chara = i == s->active && objChara >= 0 && objChara < CHARA_MAX ? objChara : rd(m, MEMBER_CHARA);
++        o->nameChara = o->chara;
++        if (i == s->active && PortChara_IsExtra(BattleSide_GetChara(side))) {
++            o->nameChara = BattleSide_GetChara(side);
++        }
+         o->costume = rd(m, MEMBER_COSTUME);
+         o->hp = rd(m, MEMBER_GAUGE + 0x00);
+         o->hpMax = rd(m, MEMBER_GAUGE + 0x04);
+diff -ruN a/port/src/gs/fight_panels.h b/port/src/gs/fight_panels.h
+--- a/port/src/gs/fight_panels.h	2026-11-06 22:39:28.902289930 +0000
++++ b/port/src/gs/fight_panels.h	2026-11-06 22:39:28.903211778 +0000
+@@ -12,6 +12,7 @@
+ typedef struct FpMember {
+     int present;  /* the slot holds a member */
+     int chara;    /* character id (the active member's: the one on screen, after a transformation) */
++    int nameChara; /* the id whose NAME is shown: chara, or an added form's hidden id (include/battle/port_chara.h) */
+     int costume;  /* costume code (8 and up: a skin of the mod grid) */
+     int hp, hpMax; /* 10000 per bar */
+     char path[FP_PATH]; /* host path of its large portrait ("" = none found) */
+diff -ruN a/port/src/gs/fight_panels_ui.cpp b/port/src/gs/fight_panels_ui.cpp
+--- a/port/src/gs/fight_panels_ui.cpp	2026-11-06 22:39:28.906553257 +0000
++++ b/port/src/gs/fight_panels_ui.cpp	2026-11-06 22:39:28.907487651 +0000
+@@ -18,6 +18,7 @@
+ #include "imgui.h"
+ #include "imgui_internal.h"
+ #include "fight_panels.h"
++#include "battle/port_chara.h"
+ 
+ extern "C" int Port_HudSwap(void);                         // gs/net.c: the HUD's sides are swapped on this copy
+ SDL_GPUTexture *Ui_Texture(uint8_t *pix, uint32_t w, uint32_t h); // ui.cpp (takes pix)
+@@ -62,6 +63,9 @@
+ };
+ 
+ static const char *chara_name(int chara) {
++    if (const char *added = PortChara_Name(chara)) { // an added form's hidden id (include/battle/port_chara.h)
++        return added;
++    }
+     return chara >= 0 && chara < (int)(sizeof(kCharaNames) / sizeof(kCharaNames[0])) ? kCharaNames[chara] : NULL;
+ }
+ 
+@@ -580,7 +584,7 @@
+ 
+ // "Goku (End) Super Saiyan" -> "GOKU" and "SUPER SAIYAN"; "Frieza Final Form" -> "FRIEZA", "FINAL FORM".
+ static void split_name(const char *full, char *main, size_t mcap, char *sub, size_t scap) {
+-    static const char *const kForms[] = {" Legendary Super Saiyan", " Super Saiyan", " Great Ape", " Transformed", " Fusion",
++    static const char *const kForms[] = {" Legendary Super Saiyan", " Super Saiyan", " SSJ", " Great Ape", " Transformed", " Fusion",
+                                          " Final Form", " 1st Form", " 2nd Form", " 3rd Form", " 100% Power", " Giant",
+                                          " Gotenks Absorbed", " Gohan Absorbed"};
+     const char *cut = NULL, *rest = NULL;
+@@ -852,7 +856,7 @@
+         dl->AddRectFilled(ImVec2(p.x0, p.y0), ImVec2(p.x1, p.y1), C(255, 255, 255, (int)(170 * (1.0f - swap))));
+     }
+     char full[96], name[64], form[64];
+-    const char *nm = chara_name(m.chara);
++    const char *nm = chara_name(m.nameChara);
+     snprintf(full, sizeof(full), "%s", nm != NULL ? nm : "???");
+     split_name(full, name, sizeof(name), form, sizeof(form));
+     double nameAt = an.swapAt > an.enterAt ? an.swapAt : an.enterAt;
+diff -ruN a/src/battle/battle_load.c b/src/battle/battle_load.c
+--- a/src/battle/battle_load.c	2026-11-06 22:39:28.879664090 +0000
++++ b/src/battle/battle_load.c	2026-11-06 22:39:28.880690810 +0000
+@@ -10,6 +10,7 @@
+ #include "sys/save.h"
+ 
+ #ifdef PORT
++#include "battle/port_chara.h"
+ /* PC build: a stage added from outside the disc (id 0x24 on) has no files on the disc. Every file id the game
+    would form for it belongs to another file: 0x171 + stage runs into the split-screen models of the disc's
+    stages (0x198 on), and 0x14E + stage into the models (0x171 on). So an added stage's model has a file id of
+@@ -397,15 +398,26 @@
+ 
+     switch (job->state) {
+     case 0:
++#ifdef PORT
++        /* PC build: an added (hidden) character slot has files of its own, see include/battle/port_chara.h */
++        model = PortChara_ModelFile(job->chara, job->costume, job->variant != 0);
++#else
+         if (job->variant != 0) {
+             model = job->chara * 10 + job->costume + (BTL_FILE_CHARA + 4);
+         } else {
+             model = job->chara * 10 + job->costume + BTL_FILE_CHARA;
+         }
++#endif
+         if (job->modelOnly == 0) {
++#ifdef PORT
++            file8 = PortChara_AnimFile(job->animChara);
++            file9 = PortChara_EffFile(job->unk1C);
++            voice = PortChara_VoiceFile(job->voiceChara, (gSaveData->flags & SAVE_FLAG_VOICE) != 0);
++#else
+             file8 = job->animChara * 10 + (BTL_FILE_CHARA + 8);
+             file9 = job->unk1C * 10 + (BTL_FILE_CHARA + 9);
+             voice = job->voiceChara + ((gSaveData->flags & SAVE_FLAG_VOICE) ? BTL_FILE_VOICE_ALT : BTL_FILE_VOICE);
++#endif
+             BtlRes_Reload(BattleSide_GetModelSlot(job->side), model, file8, file9);
+             res->bank = File_Request3(voice, res->bank, res->bankSize);
+             if (!BtlCtrl_IsSwitching(job->side)) {
+@@ -416,7 +428,11 @@
+                     member = BtlSide_GetActiveMember(job->side);
+                 }
+                 next = BattleSide_GetMember(job->side, member);
++#ifdef PORT
++                next->buf[1] = File_Request3(PortChara_DataFile(job->chara, job->side), next->buf[1], BTL_MEMBER_BUF_SIZE);
++#else
+                 next->buf[1] = File_Request3(job->chara * 2 + job->side + BTL_FILE_CHARA_DATA, next->buf[1], BTL_MEMBER_BUF_SIZE);
++#endif
+             }
+         } else {
+             BtlRes_Reload(BattleSide_GetModelSlot(job->side), model, -1, -1);
+@@ -2022,5 +2038,9 @@
+ s32 BattleSide_IsCharaUsable(s32 side, s32 chara) {
+     u64 *bits = Side(side)->charaBits.bits;
+ 
++#ifdef PORT
++    chara = PortChara_Base(chara); /* an added slot is as usable as the character it belongs to */
++#endif
++
+     return (bits[chara / 64] >> (chara % 64)) & 1;
+ }
+diff -ruN a/src/battle/btl_char_mgr.c b/src/battle/btl_char_mgr.c
+--- a/src/battle/btl_char_mgr.c	2026-11-06 22:39:28.889109085 +0000
++++ b/src/battle/btl_char_mgr.c	2026-11-06 22:39:28.890127523 +0000
+@@ -7,6 +7,9 @@
+ #include "sys/common.h"
+ #include "sys/heap.h"
+ #include "sys/save.h"
++#ifdef PORT
++#include "battle/port_chara.h"
++#endif
+ 
+ /*
+  * Fighter manager, 0x1C0058..0x1C2FF0: the roster (gBtlChars), the per-fighter reset and the whole-roster
+@@ -382,7 +385,11 @@
+     case 0xF0:
+         /* transformation: keep the health ratio */
+         m = BtlMember_GetActive(chr);
++#ifdef PORT
++        m->chara = PortChara_Base(chr->newChara); /* the stats tables know only the disc's characters */
++#else
+         m->chara = chr->newChara;
++#endif
+         g = &m->gauge;
+         m->costume = chr->newCostume;
+         g->unk20 = chr->new20;
+@@ -468,7 +475,11 @@
+             og->health = 0;
+         }
+         g->unk34 = 1;
++#ifdef PORT
++        m->chara = PortChara_Base(chr->newChara); /* the stats tables know only the disc's characters */
++#else
+         m->chara = chr->newChara;
++#endif
+         m->costume = chr->newCostume;
+         g->unk20 = chr->new20;
+         break;
+@@ -483,7 +494,11 @@
+     case 0x13A:
+     case 0x13B:
+         m = BtlMember_GetActive(chr);
++#ifdef PORT
++        m->chara = PortChara_Base(chr->newChara); /* the stats tables know only the disc's characters */
++#else
+         m->chara = chr->newChara;
++#endif
+         g = &m->gauge;
+         m->costume = chr->newCostume;
+         g->unk20 = chr->new20;
+diff -ruN a/src/battle/btl_obj.c b/src/battle/btl_obj.c
+--- a/src/battle/btl_obj.c	2026-11-06 22:39:28.884137530 +0000
++++ b/src/battle/btl_obj.c	2026-11-06 22:39:28.885168899 +0000
+@@ -28,6 +28,9 @@
+ #include "sys/common.h"
+ #include "sys/dma.h"
+ #include "sys/file.h"
++#ifdef PORT
++#include "battle/port_chara.h"
++#endif
+ #include "sys/heap.h"
+ 
+ extern void *memset(void *dst, s32 c, u32 n);
+@@ -453,7 +456,11 @@
+     BtlObjMdl_Create(type, obj, res);
+     obj->active = active;
+     obj->id = id;
++#ifdef PORT
++    obj->chara = PortChara_FromModelFile(res->file[0].id); /* an added slot reports its base character */
++#else
+     obj->chara = (res->file[0].id - 0x590) / 10;
++#endif
+     BtlObj_InitChains(obj);
+ }
+ 
+diff -ruN a/src/battle/btl_tech_a.c b/src/battle/btl_tech_a.c
+--- a/src/battle/btl_tech_a.c	2026-11-06 22:39:28.893567972 +0000
++++ b/src/battle/btl_tech_a.c	2026-11-06 22:39:28.894502062 +0000
+@@ -34,6 +34,36 @@
+ extern BtlTechChr *BtlChar_FindBySide(s32 side);
+ extern BtlTechChr *BtlChar_Get(s32 player);
+ extern BtlTechObj *BtlChar_GetObj(BtlTechChr *chr);
++
++#ifdef PORT
++#include "battle/port_chara.h"
++extern s32 BattleSide_GetChara(s32 side);
++extern BtlTechMember *BtlMember_GetActive(BtlTechChr *chr);
++
++/* PC build: 1 while the fighter is in an added form (a hidden character slot): it has no transformation of its own. */
++static s32 PortTrans_Locked(BtlTechChr *chr) {
++    return PortChara_IsExtra(BattleSide_GetChara(BtlChar_Get(0) == chr ? 0 : 1));
++}
++
++/* PC build: the added transformation that takes slot `slot` of the fighter's own table, NULL if none. It is
++   offered to the disc character it belongs to, while that slot is free, and only when its files are installed. */
++static const PortCharaSlot *PortTrans_Find(BtlTechChr *chr, s32 slot) {
++    s32 i;
++
++    if (slot < 0 || slot > 3) {
++        return NULL;
++    }
++    for (i = 0; i < PORT_CHARA_COUNT; i++) {
++        const PortCharaSlot *x = &kPortCharaSlots[i];
++
++        if (x->index == slot && x->base == BtlMember_GetActive(chr)->chara &&
++            BtlChar_GetObj(chr)->param->transTarget[slot] == 0xFF && PortChara_Installed(x->id)) {
++            return x;
++        }
++    }
++    return NULL;
++}
++#endif
+ extern BtlTechPad *BtlChar_GetPad(BtlTechChr *chr);
+ extern s32 BtlChar_IsFrozen(BtlTechChr *chr);
+ extern s32 BtlChar_IsDead(BtlTechChr *chr);
+@@ -1352,26 +1382,54 @@
+ 
+ /* Parameter +0x98 + slot: transformation target, 0xFF = none. */
+ s32 BtlParam_GetSlotId(BtlTechChr *chr, s32 slot) {
++#ifdef PORT
++    if (PortTrans_Locked(chr)) {
++        return 0xFF;
++    }
++    if (PortTrans_Find(chr, slot) != NULL) {
++        return PortTrans_Find(chr, slot)->id;
++    }
++#endif
+     return BtlChar_GetObj(chr)->param->transTarget[slot];
+ }
+ 
+ /* Parameter +0x9C + slot, times 100000: blast gauge a transformation costs. */
+ s32 BtlParam_GetSlotCost(BtlTechChr *chr, s32 slot) {
++#ifdef PORT
++    if (PortTrans_Find(chr, slot) != NULL) {
++        return PortTrans_Find(chr, slot)->cost * 100000;
++    }
++#endif
+     return BtlChar_GetObj(chr)->param->transCost[slot] * 100000;
+ }
+ 
+ /* Parameter +0xA0 + slot. */
+ s32 BtlParam_GetSlotA0(BtlTechChr *chr, s32 slot) {
++#ifdef PORT
++    if (PortTrans_Find(chr, slot) != NULL) {
++        return PortTrans_Find(chr, slot)->seq;
++    }
++#endif
+     return BtlChar_GetObj(chr)->param->transSeq[slot];
+ }
+ 
+ /* Parameter +0xA4 + slot. */
+ s32 BtlParam_GetSlotA4(BtlTechChr *chr, s32 slot) {
++#ifdef PORT
++    if (PortTrans_Find(chr, slot) != NULL) {
++        return PortTrans_Find(chr, slot)->kind;
++    }
++#endif
+     return BtlChar_GetObj(chr)->param->transKind[slot];
+ }
+ 
+ /* Parameter +0xA8 + slot. */
+ s32 BtlParam_GetSlotA8(BtlTechChr *chr, s32 slot) {
++#ifdef PORT
++    if (PortTrans_Find(chr, slot) != NULL) {
++        return PortTrans_Find(chr, slot)->a8;
++    }
++#endif
+     return BtlChar_GetObj(chr)->param->transA8[slot];
+ }
+ 
+@@ -1387,9 +1445,15 @@
+     s32 i;
+ 
+     for (i = 0; i < 4; i++) {
++#ifdef PORT
++        if (BtlParam_GetSlotId(chr, i) != 0xFF) {
++            n++;
++        }
++#else
+         if (param->transTarget[i] != 0xFF) {
+             n++;
+         }
++#endif
+     }
+     return n;
+ }
